@@ -3,6 +3,9 @@
 .env.local
 .env.*.local
 
+# SQLite veritabanı dosyaları
+data/
+
 # Derleme çıktıları
 main
 *.exe
