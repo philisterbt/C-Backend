@@ -31,6 +31,120 @@ var commonTypoFixes = []struct{ wrong, right string }{
 	{"yapi", "yapı"},
 	{"oncereden", "önceden"},
 	{"öncereden", "önceden"},
+	// Ekranda görülen ü/ı karışıklığı ve bozuk kelimeler
+	{"hakkür", "hakkında"},
+	{"açılamaya", "açıklama"},
+	{"açılamaya yaz", ""},
+	{"süeklerini", "yüksek"},
+	{"süek", "yüksek"},
+	{"katlü", "katlı"},
+	{"zorlaşü", "zorlaştırır"},
+	{"iüen", "için"},
+	{"güzergahü", "güzergahı"},
+	{"yaküa", "yakın"},
+	{"alançürinin", "alanlarının"},
+	{"alançür", "alanlar"},
+	{"toplumda", "toplanma"},
+}
+
+// promptLeakPhrases modelin kullanıcı metnine sızdırdığı talimat parçalarıdır.
+var promptLeakPhrases = []string{
+	"zorunlu kurallar",
+	"2-3 cümlelik",
+	"cümlelik türkçe",
+	"türkçe açılamaya yaz",
+	"türkçe açıklama yaz",
+	"tam olarak 3 adet",
+	"türkçe olarak",
+	"türkçe yorum",
+	"türkçe öneri",
+	"uygulanabilir türkçe",
+	"json format",
+	"birebir takip",
+	"başka hiçbir metin",
+	"respond only",
+	"do not",
+	"comment:",
+	"recommendations:",
+}
+
+// StripPromptLeakage kullanıcıya gösterilecek metinden prompt talimat kalıntılarını temizler.
+func StripPromptLeakage(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return s
+	}
+	for _, phrase := range promptLeakPhrases {
+		s = replaceIgnoreCase(s, phrase, " ")
+	}
+	s = collapseSpaces(s)
+	if len(s) > 0 {
+		runes := []rune(s)
+		runes[0] = unicode.ToUpper(runes[0])
+		s = string(runes)
+	}
+	return s
+}
+
+// HasPromptLeakage metinde hâlâ prompt talimatı kalıntısı var mı kontrol eder.
+func HasPromptLeakage(comment string, recommendations []string) bool {
+	texts := append([]string{comment}, recommendations...)
+	for _, t := range texts {
+		lower := strings.ToLower(t)
+		for _, phrase := range promptLeakPhrases {
+			if strings.Contains(lower, phrase) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// IsGarbledUserText metnin kullanıcıya gösterilemeyecek kadar bozuk olup olmadığını kontrol eder.
+func IsGarbledUserText(comment string, recommendations []string) bool {
+	if len(strings.TrimSpace(comment)) < 20 {
+		return true
+	}
+	// Çok fazla ü harfi genelde model bozulması işaretidir
+	üCount := strings.Count(strings.ToLower(comment), "ü")
+	if üCount > 5 {
+		return true
+	}
+	for _, rec := range recommendations {
+		rec = strings.TrimSpace(rec)
+		if len(rec) < 15 {
+			return true
+		}
+		if strings.Count(strings.ToLower(rec), "ü") > 4 {
+			return true
+		}
+		// Yarım kalmış cümle (nokta yok ve çok kısa)
+		if !strings.ContainsAny(rec, ".!?") && len(rec) < 40 {
+			return true
+		}
+	}
+	return false
+}
+
+// FallbackComment risk skoruna göre güvenli Türkçe bölge yorumu döndürür.
+func FallbackComment(score int) string {
+	switch {
+	case score <= 30:
+		return "Bu bölgede sokak yapısı görece daha az enkaz riski oluşturabilir. Deprem anında yine de açık alanlara ve toplanma noktalarına yönelmek önemlidir."
+	case score <= 60:
+		return "Bu bölgede orta düzeyde enkaz riski bulunmaktadır. Tahliye güzergahlarını önceden belirlemek ve acil çantanızı hazır tutmak önerilir."
+	default:
+		return "Bu bölgede yüksek enkaz riski bulunmaktadır. Dar sokaklar ve yüksek binalar depremde tahliyeyi zorlaştırabilir. En yakın toplanma alanına güvenli güzergahtan ulaşın."
+	}
+}
+
+// FallbackRecommendations her durumda gösterilebilecek güvenli Türkçe öneriler döndürür.
+func FallbackRecommendations() []string {
+	return []string{
+		"Binaların deprem güçlendirmesi için yapı denetimi yaptırın",
+		"Dar sokaklar için alternatif tahliye güzergahı belirleyin",
+		"En yakın toplanma alanına giden yolu önceden öğrenin",
+	}
 }
 
 // NeedsLLMPolish metinde ciddi Türkçe bozulma (harf tekrarı, ş/ç karışıklığı) varsa true döner.

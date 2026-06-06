@@ -31,21 +31,10 @@ const (
 	wiroPollInterval = 2 * time.Second
 )
 
-// riskAnalysisPrompt modele gönderilecek analiz sorusudur.
-// Tüm talimatlar Türkçe verilir; model yalnızca Türkçe comment ve öneriler üretmelidir.
-const riskAnalysisPrompt = `Sen bir deprem enkaz riski uzmanısın. Bu sokak görüntüsünü analiz et: sokak genişliğini ve iki yandaki bina yüksekliklerini tahmin et. Olası bir deprem senaryosunda enkaz (bina çöküşü) riskini 0-100 arasında değerlendir.
-
-Yanıtını YALNIZCA aşağıdaki JSON formatında ve TEK SATIR halinde ver. Başka hiçbir metin ekleme:
-{"risk_score": <0-100 arası sayı>, "comment": "<Türkçe yorum>", "recommendations": ["<Türkçe öneri 1>", "<Türkçe öneri 2>", "<Türkçe öneri 3>"]}
-
-ZORUNLU KURALLAR:
-1. DİL: "comment" alanı ve "recommendations" dizisindeki HER madde kesinlikle TÜRKÇE olmalıdır. İngilizce kelime, cümle veya karışık dil KULLANMA.
-2. comment: Bu bölgenin deprem enkaz riski hakkında 2-3 cümlelik Türkçe açıklama yaz (sokak darlığı, bina yüksekliği, tahliye zorluğu vb.).
-3. recommendations: Tam olarak 3 adet, bu bölgeye özel, uygulanabilir Türkçe öneri yaz (ör. bina güçlendirme, tahliye güzergahı, toplanma alanı, dar geçitler).
-4. JSON dışında markdown, kod bloğu veya açıklama ekleme. String değerlerin içine satır sonu koyma.
-
-Örnek (formatı birebir takip et, içeriği görüntüye göre değiştir):
-{"risk_score": 65, "comment": "Sokak oldukça dar ve her iki yanda yüksek katlı binalar bulunuyor. Depremde oluşacak enkaz tahliyeyi zorlaştırabilir ve çıkış yollarını kapatabilir.", "recommendations": ["Binaların deprem güçlendirmesi için yapı denetimi yaptırın", "Dar sokaklar için alternatif geniş tahliye güzergahı belirleyin", "En yakın toplanma alanına yürüme mesafesini önceden öğrenin"]}`
+// riskAnalysisPrompt modele gönderilecek kısa analiz sorusudur.
+// Uzun talimatlar modele geri sızabildiği için yalnızca örnek JSON ve kısa görev verilir.
+const riskAnalysisPrompt = `Analyze earthquake debris risk from this street photo. Return only one-line JSON. Turkish text in comment and recommendations:
+{"risk_score":65,"comment":"Sokak dar ve iki yanda yüksek binalar var. Depremde enkaz tahliyeyi zorlaştırabilir.","recommendations":["Yapı denetimi yaptırın","Alternatif tahliye güzergahı belirleyin","En yakın toplanma alanını öğrenin"]}`
 
 // wiroError Wiro AI yanıtlarındaki hata yapısını temsil eder.
 type wiroError struct {
@@ -141,20 +130,43 @@ func AnalyzeRisk(imageBytes []byte) (RiskAnalysis, error) {
 	return analysis, nil
 }
 
-// polishRiskAnalysis AI çıktısındaki Türkçe metinleri düzeltir.
-// Bozukluk tespit edilirse önce metin modeli, ardından yerel kurallar uygulanır.
+// polishRiskAnalysis AI çıktısındaki prompt sızıntısını, bozuk Türkçeyi temizler.
+// Hâlâ anlamsızsa skora göre güvenli yedek metinler kullanılır.
 func polishRiskAnalysis(apiKey string, analysis RiskAnalysis) RiskAnalysis {
-	// Ciddi bozulma varsa metin modeli ile yeniden yaz (WIRO_TEXT_POLISH=false ile kapatılabilir)
-	if os.Getenv("WIRO_TEXT_POLISH") != "false" && NeedsLLMPolish(analysis.Comment, analysis.Recommendations) {
+	// Prompt talimatlarını kullanıcı metninden ayıkla
+	analysis.Comment = StripPromptLeakage(analysis.Comment)
+	cleaned := make([]string, 0, len(analysis.Recommendations))
+	for _, rec := range analysis.Recommendations {
+		cleaned = append(cleaned, StripPromptLeakage(rec))
+	}
+	analysis.Recommendations = cleaned
+
+	// Prompt sızıntısı veya bozuk Türkçe varsa metin modeli ile yeniden yaz
+	needsRewrite := HasPromptLeakage(analysis.Comment, analysis.Recommendations) ||
+		IsGarbledUserText(analysis.Comment, analysis.Recommendations)
+	if os.Getenv("WIRO_TEXT_POLISH") != "false" && (needsRewrite || NeedsLLMPolish(analysis.Comment, analysis.Recommendations)) {
 		if polished, err := polishWithTextModel(apiKey, analysis); err == nil {
 			analysis = polished
+			analysis.Comment = StripPromptLeakage(analysis.Comment)
+			recs2 := make([]string, 0, len(analysis.Recommendations))
+			for _, rec := range analysis.Recommendations {
+				recs2 = append(recs2, StripPromptLeakage(rec))
+			}
+			analysis.Recommendations = recs2
 		}
 	}
 
-	// Yerel düzeltme (hızlı, her zaman son adım)
+	// Yerel Türkçe düzeltme
 	comment, recs := PolishTurkishTexts(analysis.Comment, analysis.Recommendations)
 	analysis.Comment = comment
 	analysis.Recommendations = recs
+
+	// Hâlâ bozuksa skora göre güvenli yedek metin kullan
+	if HasPromptLeakage(analysis.Comment, analysis.Recommendations) ||
+		IsGarbledUserText(analysis.Comment, analysis.Recommendations) {
+		analysis.Comment = FallbackComment(analysis.Score)
+		analysis.Recommendations = FallbackRecommendations()
+	}
 
 	return analysis
 }
