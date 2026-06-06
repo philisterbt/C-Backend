@@ -5,6 +5,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"c-backend/internal/models"
@@ -50,6 +51,15 @@ func (h *RiskHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	// 1. Adım: Mapillary'den sokak görüntüsünü indir
 	imageBytes, err := h.fetchStreetView(req.Lat, req.Lng)
 	if err != nil {
+		// Bu konumda hiç sokak görüntüsü yoksa, sunucu hatası değil "kapsama yok"
+		// durumudur. Mobil tarafın ayırt edebilmesi için 404 + yapılandırılmış yanıt döndür.
+		if errors.Is(err, services.ErrNoStreetViewImage) {
+			writeJSON(w, http.StatusNotFound, map[string]any{
+				"available": false,
+				"message":   "Bu konumda sokak görüntüsü bulunamadığı için risk analizi yapılamıyor.",
+			})
+			return
+		}
 		writeError(w, http.StatusBadGateway, "Sokak görüntüsü alınamadı: "+err.Error())
 		return
 	}
