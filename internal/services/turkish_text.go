@@ -3,13 +3,9 @@
 package services
 
 import (
-	"regexp"
 	"strings"
 	"unicode"
 )
-
-// repeatedRunesRe aynı harfin 3+ kez art arda tekrarını yakalar (ör. şşş, aaa).
-var repeatedRunesRe = regexp.MustCompile(`(.)\1{2,}`)
 
 // commonTypoFixes görü modelinin sık yaptığı bozuk Türkçe kalıpları ve doğruları.
 // Deprem riski bağlamında en sık geçen kelimeler önceliklidir.
@@ -51,7 +47,7 @@ func NeedsLLMPolish(comment string, recommendations []string) bool {
 
 // hasSuspiciousTurkish tek bir metinde şüpheli bozulma kalıplarını arar.
 func hasSuspiciousTurkish(s string) bool {
-	if repeatedRunesRe.MatchString(s) {
+	if hasTripleRepeatedRunes(s) {
 		return true
 	}
 	lower := strings.ToLower(s)
@@ -62,6 +58,50 @@ func hasSuspiciousTurkish(s string) bool {
 		}
 	}
 	return false
+}
+
+// hasTripleRepeatedRunes aynı harfin 3+ kez art arda tekrar edip etmediğini kontrol eder.
+// Go regexp paketi \1 backreference desteklemediği için rune döngüsü kullanılır.
+func hasTripleRepeatedRunes(s string) bool {
+	runes := []rune(s)
+	if len(runes) < 3 {
+		return false
+	}
+	for i := 2; i < len(runes); i++ {
+		if runes[i] == runes[i-1] && runes[i] == runes[i-2] {
+			return true
+		}
+	}
+	return false
+}
+
+// collapseTripleRepeatedRunes aynı harfin 3+ tekrarını tek harfe indirir (şşş → ş).
+func collapseTripleRepeatedRunes(s string) string {
+	runes := []rune(s)
+	if len(runes) == 0 {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(runes))
+
+	i := 0
+	for i < len(runes) {
+		r := runes[i]
+		j := i + 1
+		for j < len(runes) && runes[j] == r {
+			j++
+		}
+		count := j - i
+		if count >= 3 {
+			b.WriteRune(r) // 3+ tekrar → tek harf
+		} else {
+			for k := i; k < j; k++ {
+				b.WriteRune(runes[k])
+			}
+		}
+		i = j
+	}
+	return b.String()
 }
 
 // PolishTurkishTexts comment ve öneri listesindeki bozuk Türkçe metinleri düzeltir.
@@ -87,10 +127,7 @@ func polishTurkishString(s string) string {
 	}
 
 	// 2. Aynı harfin 3+ tekrarını tek harfe indir (şşş → ş)
-	s = repeatedRunesRe.ReplaceAllStringFunc(s, func(match string) string {
-		runes := []rune(match)
-		return string(runes[0])
-	})
+	s = collapseTripleRepeatedRunes(s)
 
 	// 3. Harfler arası gereksiz boşlukları temizle
 	s = collapseSpaces(s)
