@@ -135,7 +135,128 @@ func AnalyzeRisk(imageBytes []byte) (RiskAnalysis, error) {
 		return RiskAnalysis{}, err
 	}
 
+	// 4. Adım: bozuk Türkçe karakterleri ve yazım hatalarını düzelt
+	analysis = polishRiskAnalysis(apiKey, analysis)
+
 	return analysis, nil
+}
+
+// polishRiskAnalysis AI çıktısındaki Türkçe metinleri düzeltir.
+// Bozukluk tespit edilirse önce metin modeli, ardından yerel kurallar uygulanır.
+func polishRiskAnalysis(apiKey string, analysis RiskAnalysis) RiskAnalysis {
+	// Ciddi bozulma varsa metin modeli ile yeniden yaz (WIRO_TEXT_POLISH=false ile kapatılabilir)
+	if os.Getenv("WIRO_TEXT_POLISH") != "false" && NeedsLLMPolish(analysis.Comment, analysis.Recommendations) {
+		if polished, err := polishWithTextModel(apiKey, analysis); err == nil {
+			analysis = polished
+		}
+	}
+
+	// Yerel düzeltme (hızlı, her zaman son adım)
+	comment, recs := PolishTurkishTexts(analysis.Comment, analysis.Recommendations)
+	analysis.Comment = comment
+	analysis.Recommendations = recs
+
+	return analysis
+}
+
+// polishTurkishPrompt metin modeline gönderilecek yazım düzeltme talimatıdır.
+func buildPolishPrompt(analysis RiskAnalysis) string {
+	draft, _ := json.Marshal(map[string]any{
+		"risk_score":      analysis.Score,
+		"comment":         analysis.Comment,
+		"recommendations": analysis.Recommendations,
+	})
+	return `Sen Türkçe yazım düzeltme uzmanısın. Aşağıdaki JSON'daki Türkçe metinlerdeki yazım hatalarını, bozuk karakterleri (ş/ç/ğ/ü/ö/ı karışıklığı) ve gereksiz harf tekrarlarını düzelt.
+
+KURALLAR:
+- risk_score sayısını AYNEN koru, değiştirme.
+- comment ve recommendations içeriğini anlamı koruyarak düzgün Türkçe ile yeniden yaz.
+- Türkçe karakterleri doğru kullan: ç, ğ, ı, ö, ş, ü
+- Sadece TEK SATIR geçerli JSON döndür, başka metin ekleme.
+
+Girdi JSON:
+` + string(draft) + `
+
+Yanıt formatı:
+{"risk_score": <aynı sayı>, "comment": "<düzeltilmiş Türkçe>", "recommendations": ["<öneri 1>", "<öneri 2>", "<öneri 3>"]}`
+}
+
+// polishWithTextModel Wiro AI metin modeli ile yorum ve önerileri yeniden yazar.
+// WIRO_TEXT_MODEL ortam değişkeni "owner/slug" formatında olmalıdır (ör. openai/gpt-oss-20b).
+// Model erişilemezse hata döner; çağıran yerel düzeltilmiş metni kullanmaya devam eder.
+func polishWithTextModel(apiKey string, analysis RiskAnalysis) (RiskAnalysis, error) {
+	modelPath := strings.TrimSpace(os.Getenv("WIRO_TEXT_MODEL"))
+	if modelPath == "" {
+		// Varsayılan metin modeli; erişim yoksa yerel düzeltme yeterli kalır
+		modelPath = "openai/gpt-oss-20b"
+	}
+
+	parts := strings.SplitN(modelPath, "/", 2)
+	if len(parts) != 2 {
+		return analysis, fmt.Errorf("WIRO_TEXT_MODEL geçersiz format (owner/slug bekleniyor)")
+	}
+
+	runURL := fmt.Sprintf("https://api.wiro.ai/v1/Run/%s/%s", parts[0], parts[1])
+	taskToken, err := runWiroTextPrompt(runURL, apiKey, buildPolishPrompt(analysis))
+	if err != nil {
+		return analysis, err
+	}
+
+	answerText, err := pollWiroTask(taskToken, apiKey)
+	if err != nil {
+		return analysis, err
+	}
+
+	polished, err := parseRiskAnalysis(answerText)
+	if err != nil {
+		return analysis, err
+	}
+
+	// Skor orijinal analizden korunur (metin modeli skoru değiştirmesin)
+	polished.Score = analysis.Score
+	polished.Comment, polished.Recommendations = PolishTurkishTexts(
+		polished.Comment, polished.Recommendations,
+	)
+
+	return polished, nil
+}
+
+// runWiroTextPrompt görüntü gerektirmeyen metin modellerine JSON isteği gönderir.
+func runWiroTextPrompt(runURL, apiKey, prompt string) (string, error) {
+	bodyBytes, err := json.Marshal(map[string]string{
+		"prompt": prompt,
+	})
+	if err != nil {
+		return "", fmt.Errorf("Wiro metin isteği oluşturulamadı: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, runURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return "", fmt.Errorf("Wiro metin HTTP isteği oluşturulamadı: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", apiKey)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("Wiro metin isteği başarısız: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("Wiro metin yanıtı okunamadı: %w", err)
+	}
+
+	var runResp wiroRunResponse
+	if err := json.Unmarshal(respBytes, &runResp); err != nil {
+		return "", fmt.Errorf("Wiro metin yanıtı çözümlenemedi: %w", err)
+	}
+	if !runResp.Result || runResp.SocketAccessToken == "" {
+		return "", fmt.Errorf("Wiro metin modeli başarısız: %s", formatWiroErrors(runResp.Errors, string(respBytes)))
+	}
+
+	return runResp.SocketAccessToken, nil
 }
 
 // runWiroModel görüntüyü multipart/form-data olarak Wiro AI'ye yükler ve
