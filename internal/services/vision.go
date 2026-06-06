@@ -39,7 +39,10 @@ const riskAnalysisPrompt = `You are an earthquake risk assessment expert analyzi
 Respond ONLY with valid JSON in EXACTLY this format and nothing else:
 {"risk_score": <number 0-100>, "comment": "<bu bölgenin deprem enkaz riski hakkında 2-3 cümlelik Türkçe yorum>", "recommendations": ["<Türkçe öneri 1>", "<Türkçe öneri 2>", "<Türkçe öneri 3>"]}
 
-IMPORTANT: The "comment" field and every item in the "recommendations" array MUST be written in Turkish. The recommendations should be practical suggestions to reduce earthquake debris risk for this specific area (e.g. building reinforcement, safe assembly routes, widening narrow passages).`
+IMPORTANT RULES:
+- The "comment" field and every item in the "recommendations" array MUST be written in Turkish.
+- The recommendations should be practical suggestions to reduce earthquake debris risk for this specific area (e.g. building reinforcement, safe assembly routes, widening narrow passages).
+- Output a SINGLE-LINE minified JSON. Do NOT put any line breaks, tabs or raw newlines inside string values. Do NOT wrap the JSON in markdown code fences. Return ONLY the JSON object.`
 
 // wiroError Wiro AI yanıtlarındaki hata yapısını temsil eder.
 type wiroError struct {
@@ -304,6 +307,11 @@ func parseRiskAnalysis(answerText string) (RiskAnalysis, error) {
 		return RiskAnalysis{}, fmt.Errorf("model yanıtında JSON bulunamadı (ham: %s)", answerText)
 	}
 
+	// Modelin çıktısını temizle: bazı modeller string değerlerinin içine ham
+	// (escape edilmemiş) newline/tab/satır başı koyar ve bu, standart JSON
+	// ayrıştırmasını bozar. Ham kontrol karakterlerini boşluğa çeviriyoruz.
+	jsonStr = sanitizeModelJSON(jsonStr)
+
 	var output riskAnalysisOutput
 	if err := json.Unmarshal([]byte(jsonStr), &output); err != nil {
 		return RiskAnalysis{}, fmt.Errorf("risk analizi çözümlenemedi (ham: %s): %w", jsonStr, err)
@@ -334,6 +342,30 @@ func extractJSON(text string) string {
 		return ""
 	}
 	return text[start : end+1]
+}
+
+// sanitizeModelJSON modelin döndürdüğü JSON metnini json.Unmarshal'dan önce temizler.
+// Bazı modeller string değerlerinin içine ham (escape edilmemiş) newline, satır başı
+// veya tab gibi kontrol karakterleri koyar; standart JSON bunları string içinde kabul
+// etmediği için ayrıştırma başarısız olur. Olası markdown kod bloğu işaretlerini kaldırır
+// ve tüm ham kontrol karakterlerini (0x00-0x1F) boşluğa çevirerek geçerli JSON üretir.
+//
+// Not: Bu işlem yalnızca GERÇEK kontrol karakterlerini hedefler; modelin zaten doğru
+// şekilde escape ettiği "\n" gibi iki karakterli diziler olduğu gibi korunur.
+func sanitizeModelJSON(s string) string {
+	// Markdown kod bloğu işaretlerini kaldır
+	s = strings.ReplaceAll(s, "```json", "")
+	s = strings.ReplaceAll(s, "```", "")
+
+	// Ham kontrol karakterlerini boşluğa çevir
+	s = strings.Map(func(r rune) rune {
+		if r < 0x20 {
+			return ' '
+		}
+		return r
+	}, s)
+
+	return strings.TrimSpace(s)
 }
 
 // formatWiroErrors Wiro AI hata listesini okunabilir tek bir metne dönüştürür.
