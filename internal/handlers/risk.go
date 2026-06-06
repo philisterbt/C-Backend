@@ -16,7 +16,7 @@ import (
 type RiskHandler struct {
 	fetchStreetView   func(lat, lng float64) ([]byte, error)
 	blurSensitiveData func(imageBytes []byte) ([]byte, error)
-	analyzeRisk       func(imageBytes []byte) (int, error)
+	analyzeRisk       func(imageBytes []byte) (services.RiskAnalysis, error)
 }
 
 // NewRiskHandler bağımlılıkları (dependency injection) ile yeni bir RiskHandler döndürür.
@@ -71,14 +71,14 @@ func (h *RiskHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Adım: Wiro AI ile enkaz risk skorunu hesapla
-	score, err := h.analyzeRisk(blurredBytes)
+	// 3. Adım: Wiro AI ile enkaz risk skorunu, bölge yorumunu ve önerileri hesapla
+	analysis, err := h.analyzeRisk(blurredBytes)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "Risk analizi başarısız: "+err.Error())
 		return
 	}
 
 	// 4. Adım: Risk seviyesini belirleyip yanıt döndür
-	resp := models.NewRiskResponse(score)
+	resp := models.NewRiskResponse(analysis.Score, analysis.Comment, analysis.Recommendations)
 	writeJSON(w, http.StatusOK, resp)
 }

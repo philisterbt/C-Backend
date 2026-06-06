@@ -32,8 +32,14 @@ const (
 )
 
 // riskAnalysisPrompt modele gönderilecek analiz sorusudur.
-// Model yalnızca {"risk_score": <sayı>} formatında JSON döndürmesi için yönlendirilir.
-const riskAnalysisPrompt = `Analyze this street image. Estimate the street width and the height of buildings on both sides. Based on these, return a debris risk score between 0 and 100 for a potential earthquake scenario. Respond ONLY with valid JSON in this exact format and nothing else: {"risk_score": <number>}`
+// Model; risk skoru (0-100), bölge hakkında Türkçe deprem yorumu ve Türkçe
+// öneriler içeren bir JSON döndürmesi için yönlendirilir.
+const riskAnalysisPrompt = `You are an earthquake risk assessment expert analyzing a street-level image. Estimate the street width and the height of the buildings on both sides. Based on these, assess the debris (building collapse) risk for a potential earthquake scenario.
+
+Respond ONLY with valid JSON in EXACTLY this format and nothing else:
+{"risk_score": <number 0-100>, "comment": "<bu bölgenin deprem enkaz riski hakkında 2-3 cümlelik Türkçe yorum>", "recommendations": ["<Türkçe öneri 1>", "<Türkçe öneri 2>", "<Türkçe öneri 3>"]}
+
+IMPORTANT: The "comment" field and every item in the "recommendations" array MUST be written in Turkish. The recommendations should be practical suggestions to reduce earthquake debris risk for this specific area (e.g. building reinforcement, safe assembly routes, widening narrow passages).`
 
 // wiroError Wiro AI yanıtlarındaki hata yapısını temsil eder.
 type wiroError struct {
@@ -77,9 +83,19 @@ type wiroOutputContent struct {
 	Raw    string          `json:"raw"`
 }
 
-// riskScoreOutput modelin döndürdüğü JSON içindeki risk skorunu tutar.
-type riskScoreOutput struct {
-	RiskScore int `json:"risk_score"`
+// riskAnalysisOutput modelin döndürdüğü JSON'u temsil eder:
+// risk skoru, bölge yorumu ve öneriler.
+type riskAnalysisOutput struct {
+	RiskScore       int      `json:"risk_score"`
+	Comment         string   `json:"comment"`
+	Recommendations []string `json:"recommendations"`
+}
+
+// RiskAnalysis Wiro AI analizinin nihai sonucunu çağıran katmana taşır.
+type RiskAnalysis struct {
+	Score           int      // 0-100 arası enkaz risk skoru
+	Comment         string   // Bölgenin deprem riski hakkında Türkçe yorum
+	Recommendations []string // Riski azaltmaya yönelik Türkçe öneriler
 }
 
 // httpClient Wiro AI istekleri için makul timeout'a sahip paylaşımlı istemcidir.
@@ -87,33 +103,33 @@ var httpClient = &http.Client{Timeout: 30 * time.Second}
 
 // AnalyzeRisk verilen görüntü baytlarını Wiro AI moondream3-preview/query modeline
 // göndererek deprem senaryosunda bina yüksekliği ve sokak genişliğine göre hesaplanan
-// 0-100 arası enkaz risk skorunu döndürür.
-func AnalyzeRisk(imageBytes []byte) (int, error) {
+// enkaz risk skorunu, bölge yorumunu ve önerileri döndürür.
+func AnalyzeRisk(imageBytes []byte) (RiskAnalysis, error) {
 	// Ortam değişkeninden Wiro AI API anahtarını oku
 	apiKey := os.Getenv("WIRO_API_KEY")
 	if apiKey == "" {
-		return 0, fmt.Errorf("WIRO_API_KEY ortam değişkeni tanımlı değil")
+		return RiskAnalysis{}, fmt.Errorf("WIRO_API_KEY ortam değişkeni tanımlı değil")
 	}
 
 	// 1. Adım: modeli çalıştır ve task token'ını al
 	taskToken, err := runWiroModel(imageBytes, apiKey)
 	if err != nil {
-		return 0, err
+		return RiskAnalysis{}, err
 	}
 
 	// 2. Adım: task tamamlanana kadar sonucu sorgula (polling)
 	answerText, err := pollWiroTask(taskToken, apiKey)
 	if err != nil {
-		return 0, err
+		return RiskAnalysis{}, err
 	}
 
-	// 3. Adım: dönen metinden risk_score değerini çıkar
-	score, err := parseRiskScore(answerText)
+	// 3. Adım: dönen metinden risk skoru, yorum ve önerileri çıkar
+	analysis, err := parseRiskAnalysis(answerText)
 	if err != nil {
-		return 0, err
+		return RiskAnalysis{}, err
 	}
 
-	return score, nil
+	return analysis, nil
 }
 
 // runWiroModel görüntüyü multipart/form-data olarak Wiro AI'ye yükler ve
@@ -280,28 +296,33 @@ func flattenJSONText(raw json.RawMessage) string {
 	return ""
 }
 
-// parseRiskScore modelin metin yanıtından {"risk_score": <sayı>} değerini ayıklar
-// ve 0-100 aralığına sınırlanmış tamsayı skoru döndürür.
-func parseRiskScore(answerText string) (int, error) {
+// parseRiskAnalysis modelin metin yanıtından risk skoru, bölge yorumu ve
+// önerileri ayıklar; skoru 0-100 aralığına sınırlar.
+func parseRiskAnalysis(answerText string) (RiskAnalysis, error) {
 	jsonStr := extractJSON(answerText)
 	if jsonStr == "" {
-		return 0, fmt.Errorf("model yanıtında JSON bulunamadı (ham: %s)", answerText)
+		return RiskAnalysis{}, fmt.Errorf("model yanıtında JSON bulunamadı (ham: %s)", answerText)
 	}
 
-	var scoreOutput riskScoreOutput
-	if err := json.Unmarshal([]byte(jsonStr), &scoreOutput); err != nil {
-		return 0, fmt.Errorf("risk_score değeri çözümlenemedi (ham: %s): %w", jsonStr, err)
+	var output riskAnalysisOutput
+	if err := json.Unmarshal([]byte(jsonStr), &output); err != nil {
+		return RiskAnalysis{}, fmt.Errorf("risk analizi çözümlenemedi (ham: %s): %w", jsonStr, err)
 	}
 
 	// Skoru 0-100 aralığına sınırla
-	score := scoreOutput.RiskScore
+	score := output.RiskScore
 	if score < 0 {
 		score = 0
 	}
 	if score > 100 {
 		score = 100
 	}
-	return score, nil
+
+	return RiskAnalysis{
+		Score:           score,
+		Comment:         strings.TrimSpace(output.Comment),
+		Recommendations: output.Recommendations,
+	}, nil
 }
 
 // extractJSON verilen metinden ilk JSON nesnesini ({...}) çıkarır.
