@@ -32,17 +32,20 @@ const (
 )
 
 // riskAnalysisPrompt modele gönderilecek analiz sorusudur.
-// Model; risk skoru (0-100), bölge hakkında Türkçe deprem yorumu ve Türkçe
-// öneriler içeren bir JSON döndürmesi için yönlendirilir.
-const riskAnalysisPrompt = `You are an earthquake risk assessment expert analyzing a street-level image. Estimate the street width and the height of the buildings on both sides. Based on these, assess the debris (building collapse) risk for a potential earthquake scenario.
+// Tüm talimatlar Türkçe verilir; model yalnızca Türkçe comment ve öneriler üretmelidir.
+const riskAnalysisPrompt = `Sen bir deprem enkaz riski uzmanısın. Bu sokak görüntüsünü analiz et: sokak genişliğini ve iki yandaki bina yüksekliklerini tahmin et. Olası bir deprem senaryosunda enkaz (bina çöküşü) riskini 0-100 arasında değerlendir.
 
-Respond ONLY with valid JSON in EXACTLY this format and nothing else:
-{"risk_score": <number 0-100>, "comment": "<bu bölgenin deprem enkaz riski hakkında 2-3 cümlelik Türkçe yorum>", "recommendations": ["<Türkçe öneri 1>", "<Türkçe öneri 2>", "<Türkçe öneri 3>"]}
+Yanıtını YALNIZCA aşağıdaki JSON formatında ve TEK SATIR halinde ver. Başka hiçbir metin ekleme:
+{"risk_score": <0-100 arası sayı>, "comment": "<Türkçe yorum>", "recommendations": ["<Türkçe öneri 1>", "<Türkçe öneri 2>", "<Türkçe öneri 3>"]}
 
-IMPORTANT RULES:
-- The "comment" field and every item in the "recommendations" array MUST be written in Turkish.
-- The recommendations should be practical suggestions to reduce earthquake debris risk for this specific area (e.g. building reinforcement, safe assembly routes, widening narrow passages).
-- Output a SINGLE-LINE minified JSON. Do NOT put any line breaks, tabs or raw newlines inside string values. Do NOT wrap the JSON in markdown code fences. Return ONLY the JSON object.`
+ZORUNLU KURALLAR:
+1. DİL: "comment" alanı ve "recommendations" dizisindeki HER madde kesinlikle TÜRKÇE olmalıdır. İngilizce kelime, cümle veya karışık dil KULLANMA.
+2. comment: Bu bölgenin deprem enkaz riski hakkında 2-3 cümlelik Türkçe açıklama yaz (sokak darlığı, bina yüksekliği, tahliye zorluğu vb.).
+3. recommendations: Tam olarak 3 adet, bu bölgeye özel, uygulanabilir Türkçe öneri yaz (ör. bina güçlendirme, tahliye güzergahı, toplanma alanı, dar geçitler).
+4. JSON dışında markdown, kod bloğu veya açıklama ekleme. String değerlerin içine satır sonu koyma.
+
+Örnek (formatı birebir takip et, içeriği görüntüye göre değiştir):
+{"risk_score": 65, "comment": "Sokak oldukça dar ve her iki yanda yüksek katlı binalar bulunuyor. Depremde oluşacak enkaz tahliyeyi zorlaştırabilir ve çıkış yollarını kapatabilir.", "recommendations": ["Binaların deprem güçlendirmesi için yapı denetimi yaptırın", "Dar sokaklar için alternatif geniş tahliye güzergahı belirleyin", "En yakın toplanma alanına yürüme mesafesini önceden öğrenin"]}`
 
 // wiroError Wiro AI yanıtlarındaki hata yapısını temsil eder.
 type wiroError struct {
