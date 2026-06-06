@@ -1,0 +1,23 @@
+# Ortam değişkenleri — asla commit'lenmemeli
+.env
+.env.local
+.env.*.local
+
+# Derleme çıktıları
+main
+*.exe
+*.out
+/bin/
+
+# Go araçları
+vendor/
+
+# IDE dosyaları
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# İşletim sistemi dosyaları
+.DS_Store
+Thumbs.db
