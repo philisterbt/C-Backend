@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 )
 
 // mapillaryBaseURL Mapillary Graph API v4'ün temel adresidir.
@@ -32,20 +34,24 @@ type mapillaryImage struct {
 //  2. Dönen meta veriden thumb_2048_url al.
 //  3. Gerçek görüntüyü o URL'den indir ve byte dizisi olarak döndür.
 func FetchStreetView(lat, lng float64) ([]byte, error) {
-	// Ortam değişkeninden Mapillary erişim token'ını oku
-	accessToken := os.Getenv("MAPILLARY_ACCESS_TOKEN")
+	// Ortam değişkeninden Mapillary erişim token'ını oku.
+	// Panoya yapıştırma sırasında oluşabilecek baştaki/sondaki boşluk ve
+	// satır sonu karakterlerini temizle (yaygın 400 hata sebebi).
+	accessToken := strings.TrimSpace(os.Getenv("MAPILLARY_ACCESS_TOKEN"))
 	if accessToken == "" {
 		return nil, fmt.Errorf("MAPILLARY_ACCESS_TOKEN ortam değişkeni tanımlı değil")
 	}
 
-	// 1. Adım: koordinata yakın en iyi görüntünün meta verisini getir
-	metaURL := fmt.Sprintf(
-		"%s?access_token=%s&fields=id,thumb_2048_url&lat=%f&lng=%f&radius=50&limit=1",
-		mapillaryBaseURL,
-		accessToken,
-		lat,
-		lng,
-	)
+	// 1. Adım: koordinata yakın en iyi görüntünün meta verisini getir.
+	// Sorgu parametrelerini url.Values ile düzgünce encode et.
+	query := url.Values{}
+	query.Set("access_token", accessToken)
+	query.Set("fields", "id,thumb_2048_url")
+	query.Set("lat", fmt.Sprintf("%f", lat))
+	query.Set("lng", fmt.Sprintf("%f", lng))
+	query.Set("radius", "50")
+	query.Set("limit", "1")
+	metaURL := mapillaryBaseURL + "?" + query.Encode()
 
 	metaResp, err := http.Get(metaURL) //nolint:noctx
 	if err != nil {
@@ -54,7 +60,9 @@ func FetchStreetView(lat, lng float64) ([]byte, error) {
 	defer metaResp.Body.Close()
 
 	if metaResp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Mapillary API beklenmeyen durum kodu döndürdü: %d", metaResp.StatusCode)
+		// Mapillary hata gövdesini de oku; sorunun kök sebebini (ör. geçersiz token) açıklar
+		errBody, _ := io.ReadAll(metaResp.Body)
+		return nil, fmt.Errorf("Mapillary API beklenmeyen durum kodu döndürdü: %d (yanıt: %s)", metaResp.StatusCode, strings.TrimSpace(string(errBody)))
 	}
 
 	// API yanıtını parse et
